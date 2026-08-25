@@ -192,6 +192,45 @@ async function startServer() {
     }
   });
 
+  app.post("/api/push/test", async (req, res) => {
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: "Missing userId" });
+    }
+
+    try {
+      const subsSnap = await getDocs(collection(db, "users", userId, "pushSubscriptions"));
+      if (subsSnap.empty) {
+        return res.status(400).json({ error: "No tienes ningún dispositivo registrado para recibir alertas en segundo plano. Por favor, activa las notificaciones primero." });
+      }
+
+      const payload = JSON.stringify({
+        title: "Prueba de Aura ✨",
+        body: "¡Sonido y vibración activos! Tus recordatorios en segundo plano están listos para tu iPhone/dispositivo. 🔔",
+        tag: "test-push",
+        url: "/habitos"
+      });
+
+      let successCount = 0;
+      for (const subDoc of subsSnap.docs) {
+        const subData = subDoc.data();
+        try {
+          await webpush.sendNotification(subData.subscription, payload);
+          successCount++;
+        } catch (pushErr: any) {
+          if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+            await deleteDoc(doc(db, "users", userId, "pushSubscriptions", subDoc.id));
+          }
+        }
+      }
+
+      res.json({ success: true, sentTo: successCount });
+    } catch (err: any) {
+      console.error("[Push Server] Error in /api/push/test:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // API routes
   app.post("/api/parse-statement", async (req, res) => {
     const { imageBase64, mimeType } = req.body;

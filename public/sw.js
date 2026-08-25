@@ -23,6 +23,8 @@ self.addEventListener('push', function(event) {
     icon: '/favicon.ico',
     badge: '/favicon.ico',
     tag: data.tag || 'habit-reminder',
+    vibrate: [300, 100, 300, 100, 400],
+    silent: false,
     requireInteraction: true,
     data: {
       url: data.url || '/'

@@ -96,6 +96,10 @@ export default function App() {
   const [activeReminderEditId, setActiveReminderEditId] = useState<string | null>(null);
   const [editReminderTime, setEditReminderTime] = useState('09:00');
 
+  const [isTestingPush, setIsTestingPush] = useState(false);
+  const [pushTestSuccess, setPushTestSuccess] = useState<string | null>(null);
+  const [pushTestError, setPushTestError] = useState<string | null>(null);
+
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => {
     return typeof Notification !== 'undefined' ? Notification.permission : 'default';
   });
@@ -175,6 +179,31 @@ export default function App() {
       } catch (err) {
         console.error('[Push Client] Failed to register background push sub:', err);
       }
+    }
+  };
+
+  const handleTestPush = async () => {
+    if (!currentUser) return;
+    setIsTestingPush(true);
+    setPushTestSuccess(null);
+    setPushTestError(null);
+    try {
+      const response = await fetch('/api/push/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id })
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setPushTestSuccess("¡Alerta de prueba enviada con éxito! Cierra la app o bloquea tu iPhone ahora mismo para probarla en segundo plano. 🔔");
+        setTimeout(() => setPushTestSuccess(null), 8000);
+      } else {
+        setPushTestError(data.error || "Ocurrió un error al enviar la notificación.");
+      }
+    } catch (err: any) {
+      setPushTestError(err.message || "Error de conexión con el servidor.");
+    } finally {
+      setIsTestingPush(false);
     }
   };
 
@@ -1177,7 +1206,7 @@ export default function App() {
             <div className="max-w-2xl mx-auto flex flex-col gap-6">
               
               {/* NOTIFICATION ENABLE WARNING / BUTTON (for iPhone / PWA) */}
-              {notificationPermission !== 'granted' && (
+              {notificationPermission !== 'granted' ? (
                 <div className="p-4 bg-slate-900 border border-slate-850 rounded-2xl flex flex-col gap-2.5">
                   <div className="flex items-start gap-3">
                     <div className="w-8 h-8 rounded-lg bg-indigo-950 flex items-center justify-center shrink-0">
@@ -1201,6 +1230,52 @@ export default function App() {
                     <span className="text-[10px] text-slate-500 font-medium">
                       (Safari de tu iPhone → "Compartir" → "Añadir a pantalla de inicio")
                     </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 bg-slate-900 border border-slate-850 rounded-2xl flex flex-col gap-2.5">
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                      <Icon name="bell" className="w-4 h-4 text-emerald-400" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                        Recordatorios en Segundo Plano Activos
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      </h4>
+                      <p className="text-[11px] text-slate-400 leading-relaxed mt-0.5">
+                        Tus dispositivos están vinculados. Aura te alertará a la hora programada incluso con la aplicación cerrada.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 pt-1 border-t border-slate-850/50 mt-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={handleTestPush}
+                        disabled={isTestingPush}
+                        className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Icon name={isTestingPush ? "loader" : "smartphone"} className={`w-3.5 h-3.5 ${isTestingPush ? 'animate-spin' : ''}`} />
+                        <span>{isTestingPush ? 'Enviando...' : '🔔 Probar Sonido y Alerta'}</span>
+                      </button>
+                      <span className="text-[10px] text-slate-500 font-medium">
+                        (Prueba instantánea para verificar sonido y vibración)
+                      </span>
+                    </div>
+
+                    {pushTestSuccess && (
+                      <div className="p-2.5 bg-emerald-950/40 border border-emerald-500/20 text-emerald-400 text-[10px] rounded-lg font-medium animate-slide-up">
+                        {pushTestSuccess}
+                      </div>
+                    )}
+
+                    {pushTestError && (
+                      <div className="p-2.5 bg-rose-950/40 border border-rose-500/20 text-rose-455 text-[10px] rounded-lg font-medium animate-slide-up">
+                        {pushTestError}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
