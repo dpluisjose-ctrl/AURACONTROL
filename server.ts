@@ -124,11 +124,22 @@ async function startServer() {
                   for (const subDoc of subsSnap.docs) {
                     const subData = subDoc.data();
                     try {
+                      if (!subData.subscription || !subData.subscription.endpoint) {
+                        await deleteDoc(doc(db, "users", userId, "pushSubscriptions", subDoc.id));
+                        continue;
+                      }
                       await webpush.sendNotification(subData.subscription, payload);
                     } catch (pushErr: any) {
-                      if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+                      const msg = (pushErr.message || "").toLowerCase();
+                      if (
+                        pushErr.statusCode === 410 || 
+                        pushErr.statusCode === 404 ||
+                        msg.includes("pattern") ||
+                        msg.includes("expected") ||
+                        msg.includes("keys")
+                      ) {
                         await deleteDoc(doc(db, "users", userId, "pushSubscriptions", subDoc.id));
-                        console.log(`[Push Server] Removed expired subscription ${subDoc.id} for user ${userId}`);
+                        console.log(`[Push Server] Auto-cleaned malformed/expired subscription ${subDoc.id} for user ${userId}`);
                       } else {
                         console.error(`[Push Server] Error sending push to sub ${subDoc.id}:`, pushErr.message);
                       }
@@ -212,16 +223,38 @@ async function startServer() {
       });
 
       let successCount = 0;
+      let hasError = false;
+      let errorMsg = "";
+
       for (const subDoc of subsSnap.docs) {
         const subData = subDoc.data();
         try {
+          if (!subData.subscription || !subData.subscription.endpoint) {
+            await deleteDoc(doc(db, "users", userId, "pushSubscriptions", subDoc.id));
+            continue;
+          }
           await webpush.sendNotification(subData.subscription, payload);
           successCount++;
         } catch (pushErr: any) {
-          if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+          const msg = (pushErr.message || "").toLowerCase();
+          if (
+            pushErr.statusCode === 410 || 
+            pushErr.statusCode === 404 ||
+            msg.includes("pattern") ||
+            msg.includes("expected") ||
+            msg.includes("keys")
+          ) {
             await deleteDoc(doc(db, "users", userId, "pushSubscriptions", subDoc.id));
+            console.log(`[Push Server] Auto-cleaned malformed/expired subscription ${subDoc.id}`);
+          } else {
+            hasError = true;
+            errorMsg = pushErr.message || "Error de envío";
           }
         }
+      }
+
+      if (successCount === 0 && hasError) {
+        return res.status(400).json({ error: errorMsg || "No se pudo enviar la notificación a ningún dispositivo debido a un problema con las claves del navegador. Por favor, desactiva y vuelve a activar las notificaciones para corregirlo." });
       }
 
       res.json({ success: true, sentTo: successCount });

@@ -119,8 +119,9 @@ export default function App() {
 
   // Helper to convert base64 VAPID public key to Uint8Array
   const urlBase64ToUint8Array = (base64String: string) => {
-    const padding = '='.repeat((4 - base64String.length % 4) % 4);
-    const base64 = (base64String + padding)
+    const cleanString = base64String.replace(/=/g, '');
+    const padding = '='.repeat((4 - (cleanString.length % 4)) % 4);
+    const base64 = (cleanString + padding)
       .replace(/\-/g, '+')
       .replace(/_/g, '/');
 
@@ -162,6 +163,9 @@ export default function App() {
           subscription = await registration.pushManager.subscribe(subscribeOptions);
         }
 
+        // Standard serialization of push subscription keys
+        const subscriptionJson = subscription.toJSON();
+
         // Post push sub + local timezone to server
         await fetch('/api/push/subscribe', {
           method: 'POST',
@@ -170,7 +174,7 @@ export default function App() {
           },
           body: JSON.stringify({
             userId: currentUser.id,
-            subscription,
+            subscription: subscriptionJson,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
           })
         });
