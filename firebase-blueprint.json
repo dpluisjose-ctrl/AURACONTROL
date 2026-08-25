@@ -77,6 +77,18 @@
         "date": { "type": "string", "format": "date-time", "description": "ISO timestamp of Month End sweep execution" }
       },
       "required": ["id", "month", "amountUSD", "amountVES", "date"]
+    },
+    "PushSubscription": {
+      "title": "Push Subscription",
+      "description": "Web Push subscription details for background notifications",
+      "type": "object",
+      "properties": {
+        "subscription": { "type": "object", "description": "Raw Web Push subscription object from browser push manager" },
+        "timezone": { "type": "string", "description": "User local timezone" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "ISO timestamp of registration" },
+        "userId": { "type": "string", "description": "User identifier" }
+      },
+      "required": ["subscription", "timezone", "createdAt", "userId"]
     }
   },
   "firestore": {
@@ -99,6 +111,10 @@
     "users/{userId}/pastSavings/{savingId}": {
       "schema": { "$ref": "#/entities/PastSaving" },
       "description": "Historical Month End sweep records"
+    },
+    "users/{userId}/pushSubscriptions/{subscriptionId}": {
+      "schema": { "$ref": "#/entities/PushSubscription" },
+      "description": "User PWA Web Push notification tokens for background habit alerts"
     }
   }
 }

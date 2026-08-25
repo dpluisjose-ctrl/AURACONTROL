@@ -113,6 +113,71 @@ export default function App() {
     localStorage.setItem('assistant_notified_habits', JSON.stringify(notifiedHabits));
   }, [notifiedHabits]);
 
+  // Helper to convert base64 VAPID public key to Uint8Array
+  const urlBase64ToUint8Array = (base64String: string) => {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding)
+      .replace(/\-/g, '+')
+      .replace(/_/g, '/');
+
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  };
+
+  // Subscribe current browser / mobile user to background Push Notification alerts
+  const subscribeUserToPush = async () => {
+    if (!currentUser) return;
+    if ('serviceWorker' in navigator && 'PushManager' in window) {
+      try {
+        // Register sw.js static asset
+        const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        console.log('[Push Client] Service Worker registered:', registration.scope);
+
+        // Retrieve public VAPID key from Node server
+        const response = await fetch('/api/push/public-key');
+        const { publicKey } = await response.json();
+        
+        if (!publicKey) {
+          console.warn("[Push Client] No public VAPID key received.");
+          return;
+        }
+
+        const subscribeOptions = {
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey)
+        };
+
+        // Subscription check & registration
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+          subscription = await registration.pushManager.subscribe(subscribeOptions);
+        }
+
+        // Post push sub + local timezone to server
+        await fetch('/api/push/subscribe', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            userId: currentUser.id,
+            subscription,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+          })
+        });
+
+        console.log('[Push Client] Push subscription synced with background server.');
+      } catch (err) {
+        console.error('[Push Client] Failed to register background push sub:', err);
+      }
+    }
+  };
+
   // Request Notification Permission with user gesture compatibility (iOS Safari)
   const requestNotificationPermission = async () => {
     if (typeof Notification === 'undefined') {
@@ -123,8 +188,11 @@ export default function App() {
       const permission = await Notification.requestPermission();
       setNotificationPermission(permission);
       if (permission === 'granted') {
+        // Run full background Service Worker Push subscription registration flow
+        await subscribeUserToPush();
+        
         new Notification('¡Aura Asistente!', {
-          body: 'Los recordatorios de tus hábitos se han activado correctamente en tu iPhone/dispositivo. ✨',
+          body: 'Los recordatorios de tus hábitos se han activado correctamente para cuando la app esté cerrada. ✨',
           icon: '/favicon.ico'
         });
       }
@@ -132,6 +200,13 @@ export default function App() {
       console.error("Error requesting notifications permission:", e);
     }
   };
+
+  // Auto-subscribe/refresh background token whenever the user is logged in
+  useEffect(() => {
+    if (currentUser && notificationPermission === 'granted') {
+      subscribeUserToPush();
+    }
+  }, [currentUser, notificationPermission]);
 
   // Background check for habit reminders
   useEffect(() => {

@@ -4,10 +4,20 @@ import https from "https";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from 'dotenv';
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, getDoc, setDoc, getDocs, collection, deleteDoc, updateDoc } from "firebase/firestore";
+import webpush from "web-push";
+import fs from "fs";
 
 dotenv.config();
 
 const PORT = 3000;
+
+// Initialize Firebase App and Firestore for the backend push cron/subscription system
+const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
+const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, "utf8"));
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
 // Lazy initialisation of the Gemini AI client to prevent startup crashes if GEMINI_API_KEY is unset
 let aiInstance: GoogleGenAI | null = null;
@@ -32,6 +42,155 @@ function getAI(): GoogleGenAI {
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
+
+  // Setup VAPID keys for Web Push. They are loaded/persisted dynamically in Firestore.
+  let publicVapidKey = "";
+  let privateVapidKey = "";
+
+  try {
+    const vapidDocRef = doc(db, "system", "vapidKeys");
+    const vapidSnap = await getDoc(vapidDocRef);
+    if (vapidSnap.exists()) {
+      const data = vapidSnap.data();
+      publicVapidKey = data.publicKey;
+      privateVapidKey = data.privateKey;
+      console.log("[Push Server] Loaded existing VAPID keys from Firestore.");
+    } else {
+      const keys = webpush.generateVAPIDKeys();
+      publicVapidKey = keys.publicKey;
+      privateVapidKey = keys.privateKey;
+      await setDoc(vapidDocRef, { publicKey: publicVapidKey, privateKey: privateVapidKey });
+      console.log("[Push Server] Generated and saved new persistent VAPID keys to Firestore.");
+    }
+
+    webpush.setVapidDetails(
+      "mailto:duverart.o@gmail.com",
+      publicVapidKey,
+      privateVapidKey
+    );
+  } catch (err) {
+    console.error("[Push Server] Failed to setup VAPID keys:", err);
+    // Dynamic memory fallback if Firestore is not accessible/empty
+    const keys = webpush.generateVAPIDKeys();
+    publicVapidKey = keys.publicKey;
+    privateVapidKey = keys.privateKey;
+    webpush.setVapidDetails("mailto:duverart.o@gmail.com", keys.publicKey, keys.privateKey);
+  }
+
+  // Background Web Push checker function
+  async function checkAndSendPushReminders() {
+    try {
+      const usersSnap = await getDocs(collection(db, "users"));
+      for (const userDoc of usersSnap.docs) {
+        const userId = userDoc.id;
+        const userData = userDoc.data();
+        const timezone = userData.timezone || "America/Caracas";
+
+        // Calculate user's current local time
+        let userLocalTimeStr = "";
+        try {
+          userLocalTimeStr = new Date().toLocaleString("en-US", { timeZone: timezone });
+        } catch (err) {
+          userLocalTimeStr = new Date().toLocaleString("en-US", { timeZone: "America/Caracas" });
+        }
+        const userDate = new Date(userLocalTimeStr);
+        const userHH = String(userDate.getHours()).padStart(2, "0");
+        const userMM = String(userDate.getMinutes()).padStart(2, "0");
+        const localHHMM = `${userHH}:${userMM}`;
+        const todayStr = `${userDate.getFullYear()}-${String(userDate.getMonth() + 1).padStart(2, "0")}-${String(userDate.getDate()).padStart(2, "0")}`;
+
+        // Fetch user's habits from Firestore subcollection
+        const habitsSnap = await getDocs(collection(db, "users", userId, "habits"));
+        const habits = habitsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+
+        for (const habit of habits) {
+          if (habit.reminderActive && habit.reminderTime === localHHMM) {
+            const isCompletedToday = habit.history && habit.history[todayStr];
+            if (!isCompletedToday) {
+              if (habit.lastNotifiedDate !== todayStr) {
+                // Fetch user push subscriptions
+                const subsSnap = await getDocs(collection(db, "users", userId, "pushSubscriptions"));
+                
+                if (!subsSnap.empty) {
+                  console.log(`[Push Server] Triggering background push for ${userData.username || userId} -> Habit: ${habit.name} at ${localHHMM} (${timezone})`);
+                  
+                  const payload = JSON.stringify({
+                    title: "Recordatorio de Hábito",
+                    body: `¡Hola, ${userData.username || "amigo"}! Es momento de realizar tu hábito de hoy: ${habit.name}. ✨`,
+                    tag: `habit-${habit.id}`,
+                    url: "/habitos"
+                  });
+
+                  for (const subDoc of subsSnap.docs) {
+                    const subData = subDoc.data();
+                    try {
+                      await webpush.sendNotification(subData.subscription, payload);
+                    } catch (pushErr: any) {
+                      if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+                        await deleteDoc(doc(db, "users", userId, "pushSubscriptions", subDoc.id));
+                        console.log(`[Push Server] Removed expired subscription ${subDoc.id} for user ${userId}`);
+                      } else {
+                        console.error(`[Push Server] Error sending push to sub ${subDoc.id}:`, pushErr.message);
+                      }
+                    }
+                  }
+                }
+
+                // Update the habit doc's lastNotifiedDate to avoid multiple push fires in the same minute
+                await updateDoc(doc(db, "users", userId, "habits", habit.id), {
+                  lastNotifiedDate: todayStr
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[Push Server] Error in checkAndSendPushReminders:", err);
+    }
+  }
+
+  // Launch background cron/interval checking every 60 seconds
+  setInterval(async () => {
+    try {
+      await checkAndSendPushReminders();
+    } catch (err) {
+      console.error("[Push Server] Error running background check loop:", err);
+    }
+  }, 60000);
+
+  // Web Push API routes
+  app.get("/api/push/public-key", (req, res) => {
+    res.json({ publicKey: publicVapidKey });
+  });
+
+  app.post("/api/push/subscribe", async (req, res) => {
+    const { userId, subscription, timezone } = req.body;
+    if (!userId || !subscription) {
+      return res.status(400).json({ error: "Missing userId or subscription fields" });
+    }
+
+    try {
+      const subId = subscription.endpoint.split("/").pop() || "sub-" + Date.now();
+      const subRef = doc(db, "users", userId, "pushSubscriptions", subId);
+      
+      await setDoc(subRef, {
+        subscription,
+        timezone: timezone || "America/Caracas",
+        createdAt: new Date().toISOString(),
+        userId
+      });
+
+      // Maintain timezone sync on parent profile doc as well
+      await setDoc(doc(db, "users", userId), { timezone: timezone || "America/Caracas" }, { merge: true });
+
+      console.log(`[Push Server] Successfully registered Web Push subscription for ${userId}: ${subId} (${timezone})`);
+      res.json({ success: true, id: subId });
+    } catch (err: any) {
+      console.error("[Push Server] Error in /api/push/subscribe:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // API routes
   app.post("/api/parse-statement", async (req, res) => {
