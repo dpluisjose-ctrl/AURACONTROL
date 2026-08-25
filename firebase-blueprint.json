@@ -1,0 +1,104 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile with login credentials, avatar, and core settings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier for the user" },
+        "username": { "type": "string", "description": "Unique username for the registration check" },
+        "email": { "type": "string", "description": "Unique email address for registration check" },
+        "passwordHash": { "type": "string", "description": "Hashed password for auth validation" },
+        "avatar": { "type": "string", "description": "Emoji representing the user avatar" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "ISO timestamp of user creation" },
+        "exchangeRate": { "type": "number", "description": "VES-to-USD rate in Bs." }
+      },
+      "required": ["id", "username", "email", "passwordHash", "avatar", "createdAt"]
+    },
+    "Account": {
+      "title": "Account",
+      "description": "Financial debit, credit, savings, or cash card/account",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Account identifier" },
+        "name": { "type": "string", "description": "Name of the account" },
+        "type": { "type": "string", "enum": ["debit", "credit", "savings", "cash"], "description": "Specific type of account" },
+        "balance": { "type": "number", "description": "Current balance of the account" },
+        "limit": { "type": "number", "description": "Credit limit, if credit card/account" },
+        "theme": { "type": "string", "description": "Visual background theme name" },
+        "number": { "type": "string", "description": "Last digits of account/card number" },
+        "bank": { "type": "string", "description": "Associated bank / system name" },
+        "currency": { "type": "string", "enum": ["USD", "VES"], "description": "Baselined monetary currency" },
+        "dueDate": { "type": "string", "description": "Associated credit card cutoff / due day of month" }
+      },
+      "required": ["id", "name", "type", "balance", "limit", "theme", "number", "bank", "currency"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Financial entry documenting income, expense, or cross-account transfer",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Transaction ID" },
+        "accountId": { "type": "string", "description": "Originating/Primary Account ID reference" },
+        "destinationAccountId": { "type": "string", "description": "Destination Account ID reference on transfer" },
+        "amount": { "type": "number", "description": "Currency value absolute amount" },
+        "type": { "type": "string", "enum": ["income", "expense", "transfer"], "description": "Activity classification" },
+        "category": { "type": "string", "description": "Categorisation string code" },
+        "date": { "type": "string", "format": "date", "description": "ISO Date representation" },
+        "description": { "type": "string", "description": "Detailed description description" }
+      },
+      "required": ["id", "accountId", "amount", "type", "category", "date", "description"]
+    },
+    "Debt": {
+      "title": "Debt",
+      "description": "Record tracking debts to compile (yo debo) or collect (me deben)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Debt ID" },
+        "type": { "type": "string", "enum": ["to_pay", "to_collect"], "description": "Direction of the debt" },
+        "person": { "type": "string", "description": "Individual debtor/creditor name" },
+        "amount": { "type": "number", "description": "Monetary value balance" },
+        "currency": { "type": "string", "enum": ["USD", "VES"], "description": "Currency constraint" },
+        "dueDate": { "type": "string", "format": "date", "description": "Date constraint on payback timeline" },
+        "description": { "type": "string", "description": "Description of the debt" },
+        "status": { "type": "string", "enum": ["pending", "paid"], "description": "Resolution state" }
+      },
+      "required": ["id", "type", "person", "amount", "currency", "status"]
+    },
+    "PastSaving": {
+      "title": "Past Saving",
+      "description": "Month-end clean sweep historical logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Log ID" },
+        "month": { "type": "string", "description": "Sweep month label name" },
+        "amountUSD": { "type": "number", "description": "Savings consolidator absolute amount in USD" },
+        "amountVES": { "type": "number", "description": "Savings consolidator absolute amount in VES" },
+        "date": { "type": "string", "format": "date-time", "description": "ISO timestamp of Month End sweep execution" }
+      },
+      "required": ["id", "month", "amountUSD", "amountVES", "date"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "AppUser registration profiles root"
+    },
+    "users/{userId}/accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/Account" },
+      "description": "Finance balances and accounts"
+    },
+    "users/{userId}/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/Transaction" },
+      "description": "Ledger transactions"
+    },
+    "users/{userId}/debts/{debtId}": {
+      "schema": { "$ref": "#/entities/Debt" },
+      "description": "Yo Debo / Me Deben logs"
+    },
+    "users/{userId}/pastSavings/{savingId}": {
+      "schema": { "$ref": "#/entities/PastSaving" },
+      "description": "Historical Month End sweep records"
+    }
+  }
+}
