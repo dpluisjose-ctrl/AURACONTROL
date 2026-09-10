@@ -1,6 +1,6 @@
 {
   "name": "Aura",
-  "description": "",
+  "description": "Tu asistente inteligente de finanzas y hábitos personales con comandos de voz y recordatorios.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

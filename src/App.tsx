@@ -100,6 +100,9 @@ export default function App() {
   const [pushTestSuccess, setPushTestSuccess] = useState<string | null>(null);
   const [pushTestError, setPushTestError] = useState<string | null>(null);
 
+  const [isListening, setIsListening] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => {
     return typeof Notification !== 'undefined' ? Notification.permission : 'default';
   });
@@ -117,21 +120,37 @@ export default function App() {
     localStorage.setItem('assistant_notified_habits', JSON.stringify(notifiedHabits));
   }, [notifiedHabits]);
 
+  // Keep refs synchronized with states to prevent any stale closures in event listeners (like SpeechRecognition)
+  const tasksRef = useRef<AssistantTask[]>([]);
+  const notesRef = useRef<AssistantNote[]>([]);
+  const habitsRef = useRef<AssistantHabit[]>([]);
+  const chatMessagesRef = useRef<ChatMessage[]>([]);
+
+  useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+  useEffect(() => { notesRef.current = notes; }, [notes]);
+  useEffect(() => { habitsRef.current = habits; }, [habits]);
+  useEffect(() => { chatMessagesRef.current = chatMessages; }, [chatMessages]);
+
   // Helper to convert base64 VAPID public key to Uint8Array
   const urlBase64ToUint8Array = (base64String: string) => {
-    const cleanString = base64String.replace(/=/g, '');
-    const padding = '='.repeat((4 - (cleanString.length % 4)) % 4);
-    const base64 = (cleanString + padding)
-      .replace(/\-/g, '+')
-      .replace(/_/g, '/');
+    try {
+      const cleanString = base64String.replace(/\s/g, '').replace(/=/g, '');
+      const padding = '='.repeat((4 - (cleanString.length % 4)) % 4);
+      const base64 = cleanString
+        .replace(/-/g, '+')
+        .replace(/_/g, '/') + padding;
 
-    const rawData = window.atob(base64);
-    const outputArray = new Uint8Array(rawData.length);
+      const rawData = window.atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
 
-    for (let i = 0; i < rawData.length; ++i) {
-      outputArray[i] = rawData.charCodeAt(i);
+      for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+      }
+      return outputArray;
+    } catch (err) {
+      console.error('[Push Client] base64url conversion failed:', err);
+      throw err;
     }
-    return outputArray;
   };
 
   // Subscribe current browser / mobile user to background Push Notification alerts
@@ -180,8 +199,14 @@ export default function App() {
         });
 
         console.log('[Push Client] Push subscription synced with background server.');
-      } catch (err) {
+      } catch (err: any) {
         console.error('[Push Client] Failed to register background push sub:', err);
+        const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
+        if (isIOS) {
+          setPushTestError("En iPhone/iOS, las notificaciones requieren que agregues esta app a tu pantalla de inicio: toca Compartir (icono de caja con flecha arriba) -> 'Añadir a pantalla de inicio' y ábrela desde allí. ✨");
+        } else {
+          setPushTestError(err.message || "Error al registrar el dispositivo para notificaciones en segundo plano.");
+        }
       }
     }
   };
@@ -208,6 +233,223 @@ export default function App() {
       setPushTestError(err.message || "Error de conexión con el servidor.");
     } finally {
       setIsTestingPush(false);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // -------------------------------------------------------------
+  // OFFLINE VOICE COMMAND PARSER (WITHOUT INTERNET)
+  // -------------------------------------------------------------
+  const handleVoiceCommand = (transcript: string) => {
+    const text = transcript.trim().toLowerCase();
+    
+    // 1. Check for Habit / Reminder Command
+    const reminderRegex = /(?:agregar|crear|nuevo|poner|programa|programar)\s+(?:recordatorio|hábito|habito)\s+(?:de\s+)?(.+?)(?:\s+(?:a\s+las|a\s+la)\s+(\d{1,2})[:h]?(\d{2})?)?$/i;
+    const recordarRegex = /(?:recordar)\s+(?:de\s+)?(.+?)(?:\s+(?:a\s+las|a\s+la)\s+(\d{1,2})[:h]?(\d{2})?)?$/i;
+    
+    let reminderMatch = text.match(reminderRegex) || text.match(recordarRegex);
+    if (reminderMatch) {
+      const name = reminderMatch[1].trim();
+      const hourStr = reminderMatch[2];
+      const minStr = reminderMatch[3] || '00';
+      
+      let formattedTime: string | undefined = undefined;
+      if (hourStr) {
+        const hh = hourStr.padStart(2, '0');
+        const mm = minStr.padStart(2, '0');
+        formattedTime = `${hh}:${mm}`;
+      }
+      
+      const capitalizedName = name.charAt(0).toUpperCase() + name.slice(1);
+      const newHabit: AssistantHabit = {
+        id: 'habit-' + Date.now(),
+        name: capitalizedName,
+        streak: 0,
+        history: {},
+        reminderTime: formattedTime || undefined,
+        reminderActive: !!formattedTime
+      };
+      
+      persistHabits([...habitsRef.current, newHabit]);
+      
+      const successText = formattedTime 
+        ? `🔔 ¡Hecho! He programado tu recordatorio de hábito: "${capitalizedName}" para las ${formattedTime} (sin internet).`
+        : `🔔 ¡Hecho! He registrado tu hábito: "${capitalizedName}" (sin internet).`;
+        
+      const responseMsg: ChatMessage = {
+        role: 'model',
+        parts: [{ text: successText }]
+      };
+      const userMsg: ChatMessage = {
+        role: 'user',
+        parts: [{ text: `Voz: "${transcript}"` }]
+      };
+      persistChatHistory([...chatMessagesRef.current, userMsg, responseMsg]);
+      return true;
+    }
+    
+    // 2. Check for Task command
+    const taskRegex = /(?:agregar|crear|nueva|poner)\s+(?:tarea\s+pendiente|tarea)\s+(?:de\s+)?(.+?)$/i;
+    const taskRegexShort = /^(?:tarea\s+pendiente|tarea)\s+(?:de\s+)?(.+?)$/i;
+    let taskMatch = text.match(taskRegex) || text.match(taskRegexShort);
+    if (taskMatch) {
+      const taskText = taskMatch[1].trim();
+      const capitalizedTask = taskText.charAt(0).toUpperCase() + taskText.slice(1);
+      
+      const newTask: AssistantTask = {
+        id: 'task-' + Date.now(),
+        text: capitalizedTask,
+        completed: false,
+        priority: 'medium',
+        category: 'personal'
+      };
+      
+      persistTasks([...tasksRef.current, newTask]);
+      
+      const responseMsg: ChatMessage = {
+        role: 'model',
+        parts: [{ text: `📝 ¡Hecho! He agregado la tarea pendiente: "${capitalizedTask}" (sin internet).` }]
+      };
+      const userMsg: ChatMessage = {
+        role: 'user',
+        parts: [{ text: `Voz: "${transcript}"` }]
+      };
+      persistChatHistory([...chatMessagesRef.current, userMsg, responseMsg]);
+      return true;
+    }
+    
+    // 3. Check for Idea command
+    const ideaRegex = /(?:agregar|crear|nueva|escribir|guardar)\s+idea\s+(?:de\s+)?(.+?)$/i;
+    const ideaRegexShort = /^(?:idea)\s+(?:de\s+)?(.+?)$/i;
+    let ideaMatch = text.match(ideaRegex) || text.match(ideaRegexShort);
+    if (ideaMatch) {
+      const ideaText = ideaMatch[1].trim();
+      const capitalizedIdea = ideaText.charAt(0).toUpperCase() + ideaText.slice(1);
+      
+      // Determine a title (first 3 words)
+      const words = capitalizedIdea.split(' ');
+      const title = '💡 Idea: ' + (words.slice(0, 3).join(' ') + (words.length > 3 ? '...' : ''));
+      
+      const newNote: AssistantNote = {
+        id: 'note-' + Date.now(),
+        title: title,
+        content: capitalizedIdea,
+        date: new Date().toLocaleDateString(),
+        color: 'purple'
+      };
+      
+      persistNotes([...notesRef.current, newNote]);
+      
+      const responseMsg: ChatMessage = {
+        role: 'model',
+        parts: [{ text: `💡 ¡Excelente idea! La he guardado en tus notas con etiqueta especial: "${title}" (sin internet).` }]
+      };
+      const userMsg: ChatMessage = {
+        role: 'user',
+        parts: [{ text: `Voz: "${transcript}"` }]
+      };
+      persistChatHistory([...chatMessagesRef.current, userMsg, responseMsg]);
+      return true;
+    }
+    
+    // 4. Check for Note command
+    const noteRegex = /(?:agregar|crear|nueva|escribir)\s+nota\s+(?:de\s+)?(.+?)$/i;
+    const noteRegexShort = /^(?:nota)\s+(?:de\s+)?(.+?)$/i;
+    let noteMatch = text.match(noteRegex) || text.match(noteRegexShort);
+    if (noteMatch) {
+      const noteText = noteMatch[1].trim();
+      const capitalizedNote = noteText.charAt(0).toUpperCase() + noteText.slice(1);
+      
+      // Title from first 3 words
+      const words = capitalizedNote.split(' ');
+      const title = '📓 Nota: ' + (words.slice(0, 3).join(' ') + (words.length > 3 ? '...' : ''));
+      
+      const newNote: AssistantNote = {
+        id: 'note-' + Date.now(),
+        title: title,
+        content: capitalizedNote,
+        date: new Date().toLocaleDateString(),
+        color: 'indigo'
+      };
+      
+      persistNotes([...notesRef.current, newNote]);
+      
+      const responseMsg: ChatMessage = {
+        role: 'model',
+        parts: [{ text: `📓 ¡Hecho! He guardado tu nota: "${title}" (sin internet).` }]
+      };
+      const userMsg: ChatMessage = {
+        role: 'user',
+        parts: [{ text: `Voz: "${transcript}"` }]
+      };
+      persistChatHistory([...chatMessagesRef.current, userMsg, responseMsg]);
+      return true;
+    }
+    
+    return false;
+  };
+
+  const startVoiceRecognition = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setVoiceError("Tu navegador o dispositivo no admite el reconocimiento de voz por micrófono.");
+      setTimeout(() => setVoiceError(null), 5000);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'es-ES';
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      recognition.onstart = () => {
+        setIsListening(true);
+        setVoiceError(null);
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error('[Voice] Error:', event.error);
+        if (event.error === 'not-allowed') {
+          setVoiceError("Permiso de micrófono denegado. Actívalo en tu iPhone/Navegador.");
+        } else {
+          setVoiceError(`Error de micrófono: ${event.error}`);
+        }
+        setIsListening(false);
+        setTimeout(() => setVoiceError(null), 5000);
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        if (!transcript) return;
+
+        // Process offline command
+        const wasCommand = handleVoiceCommand(transcript);
+        if (!wasCommand) {
+          // If not a command, fill input box and let user know
+          setChatInput(transcript);
+          const userMsg: ChatMessage = {
+            role: 'user',
+            parts: [{ text: `Dictado: "${transcript}"` }]
+          };
+          const responseMsg: ChatMessage = {
+            role: 'model',
+            parts: [{ text: `🎙️ Escuché: "${transcript}". No detecté ningún comando directo (puedes decir "agregar tarea...", "agregar nota...", "agregar idea..." o "agregar recordatorio..."). ¿Quieres enviarle esto a Aura?` }]
+          };
+          persistChatHistory([...chatMessages, userMsg, responseMsg]);
+        }
+      };
+
+      recognition.start();
+    } catch (err: any) {
+      console.error('[Voice] Failed to start:', err);
+      setVoiceError("No se pudo iniciar el micrófono.");
+      setIsListening(false);
+      setTimeout(() => setVoiceError(null), 5000);
     }
   };
 
@@ -306,7 +548,15 @@ export default function App() {
         setChatMessages([
           {
             role: 'model',
-            parts: [{ text: `¡Hola, ${currentUser.username}! Soy Aura, tu asistente personal. ¿En qué te puedo apoyar hoy? Puedo ayudarte a organizar tus pendientes, darte consejos financieros basados en la tasa de cambio o planificar tus hábitos.` }]
+            parts: [{ text: `¡Hola, ${currentUser.username}! Soy Aura, tu asistente personal. 🎙️ ¡Ahora puedes hablarme por micrófono (funciona sin internet)!
+
+Pruébame diciendo:
+• "agregar recordatorio tomar agua a las 14:00" 🔔
+• "agregar tarea comprar comida para el gato" 📝
+• "agregar nota revisar presupuesto quincenal" 📓
+• "agregar idea crear un huerto orgánico" 💡
+
+¿En qué te puedo apoyar hoy?` }]
           }
         ]);
       }
@@ -927,14 +1177,56 @@ export default function App() {
                 ))}
               </div>
 
+              {/* VOICE ERROR IF ANY */}
+              {voiceError && (
+                <div className="p-3 bg-rose-950/40 border border-rose-500/20 text-rose-400 text-[11px] rounded-xl flex items-center gap-2 animate-slide-up">
+                  <Icon name="alert-circle" className="w-4 h-4 shrink-0" />
+                  <span>{voiceError}</span>
+                </div>
+              )}
+
+              {/* LISTENING WAVE OVERLAY PANEL */}
+              {isListening && (
+                <div className="p-4 bg-indigo-950/30 border border-indigo-500/20 rounded-2xl flex flex-col items-center justify-center gap-3 animate-pulse">
+                  <div className="flex items-center gap-1.5 justify-center">
+                    <span className="w-1.5 h-4 bg-indigo-500 rounded-full animate-bounce duration-300"></span>
+                    <span className="w-1.5 h-6 bg-indigo-400 rounded-full animate-bounce duration-500 [animation-delay:0.1s]"></span>
+                    <span className="w-1.5 h-8 bg-indigo-300 rounded-full animate-bounce duration-300 [animation-delay:0.2s]"></span>
+                    <span className="w-1.5 h-6 bg-indigo-400 rounded-full animate-bounce duration-500 [animation-delay:0.3s]"></span>
+                    <span className="w-1.5 h-4 bg-indigo-500 rounded-full animate-bounce duration-300 [animation-delay:0.4s]"></span>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs font-black text-indigo-400">Aura está escuchando tu voz (sin internet)...</p>
+                    <p className="text-[10px] text-slate-400 mt-1 max-w-md mx-auto leading-relaxed">
+                      Habla con naturalidad. Prueba diciendo: <br />
+                      <span className="text-indigo-300 font-bold">"agregar recordatorio tomar agua a las 15:30"</span>, <br />
+                      <span className="text-emerald-400 font-bold">"agregar tarea comprar víveres"</span>, o <br />
+                      <span className="text-purple-400 font-bold">"agregar nota revisar facturas"</span>.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* PROMPT BOX INPUT */}
               <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={startVoiceRecognition}
+                  className={`px-4 rounded-2xl border transition-all flex items-center justify-center cursor-pointer ${
+                    isListening 
+                      ? 'bg-rose-600/25 border-rose-500 text-rose-400 shadow-lg shadow-rose-950/20' 
+                      : 'bg-slate-900 border-slate-850 hover:border-slate-750 text-slate-400 hover:text-white'
+                  }`}
+                  title="Hablar por micrófono (Sin Internet)"
+                >
+                  <Icon name="mic" className={`w-4 h-4 ${isListening ? 'animate-bounce text-rose-400' : ''}`} />
+                </button>
                 <input
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSendChat()}
-                  placeholder="Pregúntale a Aura..."
+                  placeholder="Pregúntale a Aura o presiona el micro para comandos de voz..."
                   className="flex-1 bg-slate-900 border border-slate-850 px-4 py-3 rounded-2xl text-xs placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-all"
                 />
                 <button

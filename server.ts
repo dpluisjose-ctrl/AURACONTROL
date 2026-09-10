@@ -39,6 +39,47 @@ function getAI(): GoogleGenAI {
   return aiInstance;
 }
 
+async function generateContentWithFallback(options: { model: string; contents: any; config?: any }) {
+  const ai = getAI();
+  const primaryModel = options.model;
+  // Define fallback hierarchy
+  const fallbackModels = ["gemini-3.1-flash-lite", "gemini-3.7-flash"];
+  const maxRetriesPerModel = 2;
+  
+  const modelsToTry = [primaryModel];
+  for (const m of fallbackModels) {
+    if (m !== primaryModel) {
+      modelsToTry.push(m);
+    }
+  }
+
+  let lastError: any = null;
+
+  for (const model of modelsToTry) {
+    let delay = 600;
+    for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
+      try {
+        console.log(`[Gemini API] Requesting model: ${model} (Attempt ${attempt}/${maxRetriesPerModel})`);
+        const response = await ai.models.generateContent({
+          ...options,
+          model: model
+        });
+        return response;
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[Gemini API] Error requesting model ${model} (Attempt ${attempt}):`, err.message || err);
+        
+        if (attempt < maxRetriesPerModel) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay *= 2;
+        }
+      }
+    }
+  }
+
+  throw lastError || new Error("Failed to generate content with all candidate models.");
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
@@ -50,17 +91,30 @@ async function startServer() {
   try {
     const vapidDocRef = doc(db, "system", "vapidKeys");
     const vapidSnap = await getDoc(vapidDocRef);
+    const base64UrlRegex = /^[A-Za-z0-9\-_]+$/;
+    let keysLoaded = false;
+
     if (vapidSnap.exists()) {
       const data = vapidSnap.data();
-      publicVapidKey = data.publicKey;
-      privateVapidKey = data.privateKey;
-      console.log("[Push Server] Loaded existing VAPID keys from Firestore.");
-    } else {
+      const loadedPublic = (data.publicKey || "").trim();
+      const loadedPrivate = (data.privateKey || "").trim();
+
+      if (loadedPublic && loadedPrivate && base64UrlRegex.test(loadedPublic) && base64UrlRegex.test(loadedPrivate)) {
+        publicVapidKey = loadedPublic;
+        privateVapidKey = loadedPrivate;
+        keysLoaded = true;
+        console.log("[Push Server] Loaded and validated existing VAPID keys from Firestore.");
+      } else {
+        console.warn("[Push Server] Existing VAPID keys in Firestore are malformed or empty. Regenerating...");
+      }
+    }
+
+    if (!keysLoaded) {
       const keys = webpush.generateVAPIDKeys();
-      publicVapidKey = keys.publicKey;
-      privateVapidKey = keys.privateKey;
+      publicVapidKey = keys.publicKey.trim();
+      privateVapidKey = keys.privateKey.trim();
       await setDoc(vapidDocRef, { publicKey: publicVapidKey, privateKey: privateVapidKey });
-      console.log("[Push Server] Generated and saved new persistent VAPID keys to Firestore.");
+      console.log("[Push Server] Generated and saved clean, persistent VAPID keys to Firestore.");
     }
 
     webpush.setVapidDetails(
@@ -72,9 +126,9 @@ async function startServer() {
     console.error("[Push Server] Failed to setup VAPID keys:", err);
     // Dynamic memory fallback if Firestore is not accessible/empty
     const keys = webpush.generateVAPIDKeys();
-    publicVapidKey = keys.publicKey;
-    privateVapidKey = keys.privateKey;
-    webpush.setVapidDetails("mailto:duverart.o@gmail.com", keys.publicKey, keys.privateKey);
+    publicVapidKey = keys.publicKey.trim();
+    privateVapidKey = keys.privateKey.trim();
+    webpush.setVapidDetails("mailto:duverart.o@gmail.com", publicVapidKey, privateVapidKey);
   }
 
   // Background Web Push checker function
@@ -269,8 +323,7 @@ async function startServer() {
     const { imageBase64, mimeType } = req.body;
     
     try {
-      const ai = getAI();
-      const response = await ai.models.generateContent({
+      const response = await generateContentWithFallback({
         model: "gemini-3.5-flash",
         contents: {
           parts: [
@@ -322,8 +375,7 @@ async function startServer() {
     const { messages } = req.body;
     
     try {
-      const ai = getAI();
-      const response = await ai.models.generateContent({
+      const response = await generateContentWithFallback({
         model: "gemini-3.7-flash",
         contents: messages,
         config: {
