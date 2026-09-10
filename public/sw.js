@@ -1,4 +1,4 @@
-// Service Worker for Aura Personal Assistant Web Push Notifications
+// Service Worker for Aura Personal Assistant Web Push Notifications - Build v3.1.2 (Sept 2026)
 self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
