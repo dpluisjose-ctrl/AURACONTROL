@@ -156,6 +156,15 @@ export default function App() {
   // Subscribe current browser / mobile user to background Push Notification alerts
   const subscribeUserToPush = async () => {
     if (!currentUser) return;
+    if ('Notification' in window) {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        console.warn('[Push Client] Notification permission was denied or ignored by the user.');
+        setPushTestError("Por favor, permite el permiso de notificaciones cuando aparezca la ventana emergente para que podamos recordarte tus hábitos. ✨");
+        return;
+      }
+    }
+    
     if ('serviceWorker' in navigator && 'PushManager' in window) {
       try {
         // Register sw.js static asset
