@@ -107,6 +107,34 @@ export default function App() {
     return typeof Notification !== 'undefined' ? Notification.permission : 'default';
   });
 
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+
+  useEffect(() => {
+    // Detect standalone PWA mode
+    const isStandaloneMode = 
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as any).standalone === true;
+    setIsStandalone(isStandaloneMode);
+
+    // Detect iOS devices
+    const userAgent = window.navigator.userAgent.toLowerCase();
+    const isIOSDevice = /iphone|ipad|ipod/.test(userAgent) || 
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    setIsIOS(isIOSDevice);
+
+    // Unconditionally register Service Worker on mount for full PWA detection
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .then(reg => {
+          console.log('[PWA] Service Worker registered on startup:', reg.scope);
+        })
+        .catch(err => {
+          console.error('[PWA] Service Worker registration failed on startup:', err);
+        });
+    }
+  }, []);
+
   const [notifiedHabits, setNotifiedHabits] = useState<Record<string, string>>(() => {
     try {
       const local = localStorage.getItem('assistant_notified_habits');
@@ -176,11 +204,20 @@ export default function App() {
           applicationServerKey: urlBase64ToUint8Array(publicKey)
         };
 
-        // Subscription check & registration
+        // Force refreshing the subscription by unsubscribing any old browser subscription first.
+        // This is crucial to prevent key mismatch errors if VAPID keys on the server are regenerated.
         let subscription = await registration.pushManager.getSubscription();
-        if (!subscription) {
-          subscription = await registration.pushManager.subscribe(subscribeOptions);
+        if (subscription) {
+          try {
+            await subscription.unsubscribe();
+            console.log('[Push Client] Unsubscribed old browser-side subscription to ensure key alignment.');
+          } catch (unsubErr) {
+            console.warn('[Push Client] Non-blocking unsubscribe issue:', unsubErr);
+          }
         }
+
+        // Freshly subscribe using the server's current public VAPID key
+        subscription = await registration.pushManager.subscribe(subscribeOptions);
 
         // Standard serialization of push subscription keys
         const subscriptionJson = subscription.toJSON();
@@ -1503,31 +1540,57 @@ Pruébame diciendo:
               
               {/* NOTIFICATION ENABLE WARNING / BUTTON (for iPhone / PWA) */}
               {notificationPermission !== 'granted' ? (
-                <div className="p-4 bg-slate-900 border border-slate-850 rounded-2xl flex flex-col gap-2.5">
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-indigo-950 flex items-center justify-center shrink-0">
-                      <Icon name="bell" className="w-4 h-4 text-indigo-400" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-white">Recordatorios de Hábitos</h4>
-                      <p className="text-[11px] text-slate-400 leading-relaxed mt-0.5">
-                        Para recibir alertas en tu iPhone u otro dispositivo, necesitas activar los permisos y asegurarte de tener la aplicación agregada a tu Pantalla de Inicio.
-                      </p>
+                isIOS && !isStandalone ? (
+                  <div className="p-4 bg-slate-900 border border-amber-500/20 rounded-2xl flex flex-col gap-2.5">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-amber-950/30 border border-amber-500/30 flex items-center justify-center shrink-0">
+                        <Icon name="smartphone" className="w-4 h-4 text-amber-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                          📱 Paso 1: Agregar a Pantalla de Inicio
+                          <span className="px-1.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-[9px] text-amber-400 font-medium">Requerido por iOS</span>
+                        </h4>
+                        <p className="text-[11px] text-slate-400 leading-relaxed mt-1">
+                          Apple no permite activar alertas en el navegador Safari común. Para habilitar los recordatorios, debes agregar Aura a tu escritorio:
+                        </p>
+                        <ol className="list-decimal list-inside text-[11px] text-slate-350 leading-relaxed mt-1.5 space-y-1">
+                          <li>Toca el botón de <strong className="text-amber-400">Compartir</strong> (icono de la caja con flecha hacia arriba) en Safari.</li>
+                          <li>Busca y toca <strong className="text-amber-400">"Añadir a pantalla de inicio"</strong>.</li>
+                          <li>Abre Aura desde tu pantalla de inicio y activa los recordatorios allí.</li>
+                        </ol>
+                      </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 flex-wrap pt-1 border-t border-slate-850/50 mt-1">
-                    <button
-                      type="button"
-                      onClick={requestNotificationPermission}
-                      className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold rounded-xl transition-all cursor-pointer"
-                    >
-                      Permitir Notificaciones
-                    </button>
-                    <span className="text-[10px] text-slate-500 font-medium">
-                      (Safari de tu iPhone → "Compartir" → "Añadir a pantalla de inicio")
-                    </span>
+                ) : (
+                  <div className="p-4 bg-slate-900 border border-indigo-500/20 rounded-2xl flex flex-col gap-2.5">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-indigo-950 flex items-center justify-center shrink-0">
+                        <Icon name="bell" className="w-4 h-4 text-indigo-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                          🔔 Paso 2: Permitir Notificaciones
+                          {isStandalone && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[9px] text-emerald-400 font-medium">¡Instalación Detectada! ✓</span>
+                          )}
+                        </h4>
+                        <p className="text-[11px] text-slate-400 leading-relaxed mt-0.5">
+                          Permite los permisos de alerta nativos para que Aura te recuerde tus hábitos a la hora exacta, incluso si cierras la aplicación o bloqueas tu teléfono.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap pt-1 border-t border-slate-850/50 mt-1">
+                      <button
+                        type="button"
+                        onClick={requestNotificationPermission}
+                        className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold rounded-xl transition-all cursor-pointer"
+                      >
+                        Permitir Notificaciones
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )
               ) : (
                 <div className="p-4 bg-slate-900 border border-slate-850 rounded-2xl flex flex-col gap-2.5">
                   <div className="flex items-start gap-3">

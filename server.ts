@@ -318,6 +318,17 @@ async function startServer() {
     }
   });
 
+  app.all("/api/push/cron", async (req, res) => {
+    try {
+      console.log("[Push Server] Background cron check triggered.");
+      await checkAndSendPushReminders();
+      res.json({ success: true, message: "Background push reminders checked and processed successfully." });
+    } catch (err: any) {
+      console.error("[Push Server] Error in /api/push/cron endpoint:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // API routes
   app.post("/api/parse-statement", async (req, res) => {
     const { imageBase64, mimeType } = req.body;
